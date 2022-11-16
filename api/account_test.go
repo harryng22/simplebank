@@ -17,18 +17,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGetAccountAPI(t *testing.T) {
-	account := randomAccount()
+const (
+	BASE_URL = "/accounts"
+)
 
-	testCases := []struct {
-		name          string
-		accountId     int64
-		buildStubs    func(store *mockdb.MockStore)
-		checkResponse func(t *testing.T, recorder *httptest.ResponseRecorder)
-	}{
+type AccountTestCase struct {
+	name          string
+	account       db.Account
+	buildStubs    func(store *mockdb.MockStore)
+	checkResponse func(t *testing.T, recorder *httptest.ResponseRecorder)
+}
+
+func GenerateGetAccountTestCases() []AccountTestCase {
+	account := randomAccount()
+	return []AccountTestCase{
 		{
-			name:      "OK",
-			accountId: account.ID,
+			name:    "OK",
+			account: account,
 			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
 					GetAccount(gomock.Any(), account.ID).
@@ -41,8 +46,8 @@ func TestGetAccountAPI(t *testing.T) {
 			},
 		},
 		{
-			name:      "NotFound",
-			accountId: account.ID,
+			name:    "NotFound",
+			account: account,
 			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
 					GetAccount(gomock.Any(), account.ID).
@@ -54,8 +59,8 @@ func TestGetAccountAPI(t *testing.T) {
 			},
 		},
 		{
-			name:      "InternalError",
-			accountId: account.ID,
+			name:    "InternalError",
+			account: account,
 			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
 					GetAccount(gomock.Any(), account.ID).
@@ -67,8 +72,8 @@ func TestGetAccountAPI(t *testing.T) {
 			},
 		},
 		{
-			name:      "InvalidID",
-			accountId: 0,
+			name:    "InvalidID",
+			account: db.Account{},
 			buildStubs: func(store *mockdb.MockStore) {
 				store.EXPECT().
 					GetAccount(gomock.Any(), gomock.Any()).
@@ -79,34 +84,102 @@ func TestGetAccountAPI(t *testing.T) {
 			},
 		},
 	}
+}
 
-	for i := range testCases {
-		tc := testCases[i]
-		t.Run(tc.name, func(t *testing.T) {
-			controller := gomock.NewController(t)
-			defer controller.Finish()
-
-			store := mockdb.NewMockStore(controller)
-
-			// build stubs
-			tc.buildStubs(store)
-
-			// start test server and send request
-			server := NewServer(store)
-			recorder := httptest.NewRecorder()
-
-			url := fmt.Sprintf("/accounts/%d", tc.accountId)
-			request, err := http.NewRequest(http.MethodGet, url, nil)
-			require.NoError(t, err)
-
-			server.router.ServeHTTP(recorder, request)
-
-			// check response
-			tc.checkResponse(t, recorder)
-		})
-
+func GenerateCreateAccountTestCases() []AccountTestCase {
+	account := randomAccount()
+	args := db.CreateAccountParams{
+		Owner:    account.Owner,
+		Balance:  0,
+		Currency: account.Currency,
 	}
+	return []AccountTestCase{
+		{
+			name:    "Ok",
+			account: account,
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					CreateAccount(gomock.Any(), args).
+					Times(1).
+					Return(account, nil)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusOK, recorder.Code)
+				requireBodyMatchAccount(t, recorder.Body, account)
+			},
+		},
+		{
+			name:    "BadRequest",
+			account: db.Account{},
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					CreateAccount(gomock.Any(), args).
+					Times(0)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusBadRequest, recorder.Code)
+			},
+		},
+		{
+			name:    "InternalServerError",
+			account: account,
+			buildStubs: func(store *mockdb.MockStore) {
+				store.EXPECT().
+					CreateAccount(gomock.Any(), args).
+					Times(1).
+					Return(db.Account{}, sql.ErrConnDone)
+			},
+			checkResponse: func(t *testing.T, recorder *httptest.ResponseRecorder) {
+				require.Equal(t, http.StatusInternalServerError, recorder.Code)
+			},
+		},
+	}
+}
 
+func TestGetAccountAPI(t *testing.T) {
+	testCases := GenerateGetAccountTestCases()
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			url := fmt.Sprintf("%s/%d", BASE_URL, tc.account.ID)
+			doTestAccountAPI(t, http.MethodGet, url, nil, tc)
+		})
+	}
+}
+
+func TestCreateAccountAPI(t *testing.T) {
+	testCases := GenerateCreateAccountTestCases()
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			doTestAccountAPI(t, http.MethodPost, BASE_URL, tc.account, tc)
+		})
+	}
+}
+
+func doTestAccountAPI(t *testing.T, method string, url string, account any, tc AccountTestCase) {
+	controller := gomock.NewController(t)
+	defer controller.Finish()
+
+	store := mockdb.NewMockStore(controller)
+
+	// build stubs
+	tc.buildStubs(store)
+
+	// start test server and send request
+	server := NewServer(store)
+	recorder := httptest.NewRecorder()
+
+	body, err := json.Marshal(account)
+	require.NoError(t, err)
+
+	request, err := http.NewRequest(method, url, bytes.NewBuffer(body))
+	require.NoError(t, err)
+
+	server.router.ServeHTTP(recorder, request)
+
+	// check response
+	tc.checkResponse(t, recorder)
 }
 
 func randomAccount() db.Account {
